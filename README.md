@@ -1,5 +1,5 @@
 # Unity-Prefab-Reference-Finder
-预制体的引用和依赖搜索器
+Unity预制体的引用和依赖搜索器
 
 拖到Editor里就能直接用了。
 
