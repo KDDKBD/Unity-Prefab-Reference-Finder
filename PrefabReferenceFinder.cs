@@ -577,8 +577,9 @@ public class PrefabReferenceFinder : EditorWindow
                                 targetPrefab = gameObj;
                                 titleContent = new GUIContent($"Prefab: {targetPrefab.name}");
                                 
-                                if (cacheInitialized)
+                                if (LoadCacheFromDisk() || cacheInitialized)
                                 {
+                                    cacheInitialized = true;
                                     FindReferencesWithCache();
                                 }
                                 else
