@@ -8,7 +8,7 @@ using System.Text;
 
 public class PrefabReferenceFinder : EditorWindow
 {
-    private const string PrefabsFolderPath = "Assets"; // "Assets/Resources/UI"
+    private const string PrefabsFolderPath = "Assets";
     private const string CacheFileName = "PrefabReferenceCache.json";
     private static Dictionary<string, List<string>> referenceCache = new Dictionary<string, List<string>>();
     private static Dictionary<string, HashSet<string>> dependencyMap = new Dictionary<string, HashSet<string>>();
@@ -20,11 +20,16 @@ public class PrefabReferenceFinder : EditorWindow
     private List<string> dependencyResults = new List<string>();
     private static bool isSearching;
     private static bool cacheInitialized;
-    private bool useCache = true;
     private List<string> allPrefabPaths = new List<string>();
     private int cacheProgressIndex;
     private int cacheItemsPerFrame = 20;
-    private static bool cancelCacheBuilding = false;    // 添加取消标志
+    private static bool cancelCacheBuilding = false;
+    
+    // 分类存储依赖项
+    private List<string> prefabDependencies = new List<string>();
+    private List<string> textureDependencies = new List<string>();
+    private List<string> scriptDependencies = new List<string>();
+    private List<string> otherDependencies = new List<string>();
     
     [MenuItem("Assets/Find Reference in Prefabs", false, 20)]
     private static void FindReferences()
@@ -40,44 +45,29 @@ public class PrefabReferenceFinder : EditorWindow
         window.targetPrefab = selected;
         window.titleContent = new GUIContent($"Prefab: {selected.name}");
         
-        if (!cacheInitialized)
+        if (LoadCacheFromDisk() || cacheInitialized)
         {
-            window.InitializeCache();
+            cacheInitialized = true;
+            window.FindReferencesWithCache();
         }
         else
         {
+            window.BuildCache();
             window.FindReferencesWithCache();
-        }
-    }
-
-    private void InitializeCache()
-    {
-        if (cacheInitialized) return;
-        
-        if (LoadCacheFromDisk())
-        {
             cacheInitialized = true;
-            FindReferencesWithCache();
-            return;
         }
-
-        BuildCache();
     }
 
     private void BuildCache()
     {
-        cancelCacheBuilding = false; // 重置取消标志
-        
+        cancelCacheBuilding = false;
         referenceCache.Clear();
         dependencyMap.Clear();
-        
         isSearching = true;
         referenceResults.Clear();
         dependencyResults.Clear();
-        
         allPrefabPaths = GetPrefabPathsInFolder(PrefabsFolderPath);
         cacheProgressIndex = 0;
-        
         EditorApplication.update += ProcessCacheFrame;
     }
 
@@ -95,7 +85,6 @@ public class PrefabReferenceFinder : EditorWindow
 
     private void ProcessCacheFrame()
     {
-        // 增加取消检查
         if (cacheProgressIndex >= allPrefabPaths.Count || cancelCacheBuilding)
         {
             EditorApplication.update -= ProcessCacheFrame;
@@ -103,7 +92,6 @@ public class PrefabReferenceFinder : EditorWindow
         
             if (cancelCacheBuilding)
             {
-                // 取消时的处理
                 Debug.Log("Cache building cancelled");
                 referenceCache.Clear();
                 dependencyMap.Clear();
@@ -111,7 +99,6 @@ public class PrefabReferenceFinder : EditorWindow
             }
             else
             {
-                // 正常完成
                 cacheInitialized = true;
                 SaveCacheToDisk();
                 FindReferencesWithCache();
@@ -119,7 +106,7 @@ public class PrefabReferenceFinder : EditorWindow
         
             Repaint();
             EditorUtility.ClearProgressBar();
-            cancelCacheBuilding = false; // 重置标志
+            cancelCacheBuilding = false;
             return;
         }
 
@@ -131,12 +118,10 @@ public class PrefabReferenceFinder : EditorWindow
             {
                 string path = allPrefabPaths[i];
         
-                // 使用可取消的进度条
                 if (EditorUtility.DisplayCancelableProgressBar("Building Cache", 
                         $"Processing: {Path.GetFileName(path)} ({i+1}/{allPrefabPaths.Count})", 
                         (float)i / allPrefabPaths.Count))
                 {
-                    // 用户点击了取消按钮
                     cancelCacheBuilding = true;
                     break;
                 }
@@ -146,7 +131,6 @@ public class PrefabReferenceFinder : EditorWindow
         }
         finally
         {
-            // 确保在循环结束后清理进度条
             if (cancelCacheBuilding || cacheProgressIndex >= allPrefabPaths.Count)
             {
                 EditorUtility.ClearProgressBar();
@@ -162,7 +146,6 @@ public class PrefabReferenceFinder : EditorWindow
         try
         {
             string[] dependencies = AssetDatabase.GetDependencies(prefabPath, false);
-            
             dependencyMap[prefabPath] = new HashSet<string>(dependencies);
             
             foreach (string dependency in dependencies)
@@ -192,42 +175,75 @@ public class PrefabReferenceFinder : EditorWindow
         referenceResults.Clear();
         dependencyResults.Clear();
 
-        if (useCache)
+        // 获取引用结果
+        if (referenceCache.TryGetValue(targetPath, out var references))
         {
-            // 获取引用结果（哪些prefab引用了当前目标）
-            if (referenceCache.TryGetValue(targetPath, out var references))
-            {
-                referenceResults = references;
-            }
-            
-            // 获取依赖结果（当前目标依赖了哪些资源）
-            if (dependencyMap.TryGetValue(targetPath, out var dependencies))
-            {
-                dependencyResults = dependencies.ToList();
-            }
+            referenceResults = references;
         }
-        else
+        
+        // 获取依赖结果
+        if (dependencyMap.TryGetValue(targetPath, out var dependencies))
         {
-            FindReferencesDirect();
+            dependencyResults = dependencies.ToList();
         }
+        
+        // 对引用列表按字母顺序排序
+        referenceResults.Sort((a, b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase));
+        
+        // 对依赖项进行分类和排序
+        ClassifyAndSortDependencies();
         
         Repaint();
         EditorUtility.ClearProgressBar();
     }
 
-    private void FindReferencesDirect()
+    // 分类并排序依赖项
+    private void ClassifyAndSortDependencies()
     {
-        string targetPath = AssetDatabase.GetAssetPath(targetPrefab);
-        referenceResults.Clear();
-        dependencyResults.Clear();
-
-        // 直接查找引用
-        referenceResults = allPrefabPaths
-            .Where(path => dependencyMap.TryGetValue(path, out var deps) && deps.Contains(targetPath))
-            .ToList();
+        prefabDependencies.Clear();
+        textureDependencies.Clear();
+        scriptDependencies.Clear();
+        otherDependencies.Clear();
         
-        // 直接查找依赖
-        dependencyResults = AssetDatabase.GetDependencies(targetPath, false).ToList();
+        foreach (string path in dependencyResults)
+        {
+            string extension = Path.GetExtension(path).ToLower();
+            
+            if (extension == ".prefab")
+            {
+                prefabDependencies.Add(path);
+            }
+            else if (IsTextureExtension(extension))
+            {
+                textureDependencies.Add(path);
+            }
+            else if (IsScriptExtension(extension))
+            {
+                scriptDependencies.Add(path);
+            }
+            else
+            {
+                otherDependencies.Add(path);
+            }
+        }
+        
+        // 每个类别内按字母顺序排序
+        prefabDependencies.Sort((a, b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase));
+        textureDependencies.Sort((a, b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase));
+        scriptDependencies.Sort((a, b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase));
+        otherDependencies.Sort((a, b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private bool IsTextureExtension(string extension)
+    {
+        string[] textureExtensions = { ".png", ".jpg", ".jpeg", ".tga", ".tif", ".tiff", ".gif", ".bmp", ".psd", ".exr", ".hdr" };
+        return textureExtensions.Contains(extension);
+    }
+
+    private bool IsScriptExtension(string extension)
+    {
+        string[] scriptExtensions = { ".cs", ".js", ".shader", ".asmdef", ".cginc", ".hlsl", ".glslinc", ".template" };
+        return scriptExtensions.Contains(extension);
     }
 
     private static bool LoadCacheFromDisk()
@@ -244,15 +260,9 @@ public class PrefabReferenceFinder : EditorWindow
             string json = File.ReadAllText(cachePath);
             var data = JsonUtility.FromJson<CacheData>(json);
             
-            if (data == null)
+            if (data == null || data.entries == null)
             {
-                Debug.LogError("Failed to load cache: Deserialized data is null");
-                return false;
-            }
-            
-            if (data.entries == null)
-            {
-                Debug.LogError("Cache data is corrupted: entries list is null");
+                Debug.LogError("Cache data is corrupted");
                 return false;
             }
             
@@ -260,7 +270,6 @@ public class PrefabReferenceFinder : EditorWindow
             foreach (var entry in data.entries)
             {
                 if (string.IsNullOrEmpty(entry.key)) continue;
-                
                 referenceCache[entry.key] = entry.values ?? new List<string>();
             }
             
@@ -268,11 +277,9 @@ public class PrefabReferenceFinder : EditorWindow
             foreach (var kvp in referenceCache)
             {
                 if (kvp.Value == null) continue;
-                
                 foreach (var referencingPath in kvp.Value)
                 {
                     if (string.IsNullOrEmpty(referencingPath)) continue;
-                    
                     if (!dependencyMap.ContainsKey(referencingPath))
                     {
                         dependencyMap[referencingPath] = new HashSet<string>();
@@ -287,19 +294,6 @@ public class PrefabReferenceFinder : EditorWindow
         catch (Exception e)
         {
             Debug.LogError($"Failed to load cache: {e}");
-            
-            try
-            {
-                string backupPath = cachePath + ".corrupted";
-                if (File.Exists(backupPath)) File.Delete(backupPath);
-                File.Move(cachePath, backupPath);
-                Debug.Log($"Moved corrupted cache to {backupPath}");
-            }
-            catch (Exception backupEx)
-            {
-                Debug.LogError($"Failed to backup corrupted cache: {backupEx}");
-            }
-            
             return false;
         }
     }
@@ -314,7 +308,6 @@ public class PrefabReferenceFinder : EditorWindow
             foreach (var kvp in referenceCache)
             {
                 if (string.IsNullOrEmpty(kvp.Key)) continue;
-                
                 var entry = new CacheEntry
                 {
                     key = kvp.Key,
@@ -326,7 +319,6 @@ public class PrefabReferenceFinder : EditorWindow
             string json = JsonUtility.ToJson(data, true);
             string cachePath = Path.Combine(Application.dataPath, "..", CacheFileName);
             File.WriteAllText(cachePath, json, Encoding.UTF8);
-            
             Debug.Log($"Cache saved successfully with {data.entries.Count} entries");
         }
         catch (Exception e)
@@ -351,7 +343,6 @@ public class PrefabReferenceFinder : EditorWindow
     private void OnEnable()
     {
         EditorApplication.projectChanged += OnProjectChanged;
-        // 允许接受拖拽
         wantsMouseMove = true;
     }
 
@@ -360,9 +351,6 @@ public class PrefabReferenceFinder : EditorWindow
         EditorApplication.projectChanged -= OnProjectChanged;
         EditorApplication.update -= ProcessCacheFrame;
         EditorUtility.ClearProgressBar();
-        
-        // // 重置GUI状态
-        // GUIUtility.ExitGUI();
     }
 
     private static void OnProjectChanged()
@@ -372,7 +360,6 @@ public class PrefabReferenceFinder : EditorWindow
 
     private void OnGUI()
     {
-        // 处理拖拽事件
         HandleDragAndDrop();
 
         EditorGUILayout.Space();
@@ -397,16 +384,11 @@ public class PrefabReferenceFinder : EditorWindow
         EditorGUILayout.LabelField($"Search Path: {PrefabsFolderPath}", EditorStyles.miniLabel);
 
         // 缓存控制区域
-        EditorGUILayout.BeginHorizontal();
-        useCache = EditorGUILayout.Toggle("Use Cache", useCache, GUILayout.Width(150));
-        
-        if (GUILayout.Button(cacheInitialized ? "Refresh Cache" : "Build Cache", GUILayout.Width(120)))
+        if (GUILayout.Button("Rebuild Cache", GUILayout.Width(120)))
         {
             cacheInitialized = false;
-            InitializeCache();
+            BuildCache();
         }
-        
-        EditorGUILayout.EndHorizontal();
         
         string cacheStatus = cacheInitialized ? 
             "Cache initialized. Subsequent searches will be instant." : 
@@ -414,7 +396,6 @@ public class PrefabReferenceFinder : EditorWindow
             
         if (isSearching)
         {
-            // 添加取消按钮
             EditorGUILayout.BeginHorizontal();
             float progress = (float)cacheProgressIndex / allPrefabPaths.Count;
             EditorGUI.ProgressBar(EditorGUILayout.GetControlRect(), progress, 
@@ -431,15 +412,12 @@ public class PrefabReferenceFinder : EditorWindow
             EditorGUILayout.HelpBox(cacheStatus, MessageType.Info);
         }
         
-        // 拖拽提示
         EditorGUILayout.HelpBox("Drag any prefab into this window to search for its references and dependencies.", MessageType.Info);
 
-        // 结果区域
         if (!isSearching)
         {
             EditorGUILayout.Separator();
             
-            // 使用水平布局并排显示引用和依赖
             EditorGUILayout.BeginHorizontal();
             
             // 左侧：引用列表
@@ -480,10 +458,11 @@ public class PrefabReferenceFinder : EditorWindow
                 }
                 else
                 {
-                    foreach (string path in dependencyResults)
-                    {
-                        DisplayAssetItem(path);
-                    }
+                    // 按分类显示依赖项
+                    DisplayDependencyCategory("Prefabs", prefabDependencies);
+                    DisplayDependencyCategory("Textures", textureDependencies);
+                    DisplayDependencyCategory("Scripts", scriptDependencies);
+                    DisplayDependencyCategory("Other", otherDependencies);
                 }
             }
             finally
@@ -497,6 +476,17 @@ public class PrefabReferenceFinder : EditorWindow
         }
     }
 
+    private void DisplayDependencyCategory(string categoryName, List<string> paths)
+    {
+        if (paths.Count == 0) return;
+        
+        EditorGUILayout.LabelField($"{categoryName} ({paths.Count})", EditorStyles.boldLabel);
+        foreach (string path in paths)
+        {
+            DisplayAssetItem(path);
+        }
+    }
+
     private void DisplayAssetItem(string path)
     {
         if (string.IsNullOrEmpty(path)) return;
@@ -504,8 +494,6 @@ public class PrefabReferenceFinder : EditorWindow
         EditorGUILayout.BeginHorizontal(GUILayout.Height(24));
         
         UnityEngine.Object asset = AssetDatabase.LoadMainAssetAtPath(path);
-        System.Type assetType = asset?.GetType();
-        
         Texture2D icon = EditorGUIUtility.FindTexture("DefaultAsset Icon") as Texture2D;
 
         if (asset != null)
@@ -549,7 +537,6 @@ public class PrefabReferenceFinder : EditorWindow
 
     private void HandleDragAndDrop()
     {
-        // 创建覆盖整个窗口的拖拽区域
         Rect dropArea = new Rect(0, 0, position.width, position.height);
         GUI.Box(dropArea, "", GUIStyle.none);
 
@@ -563,7 +550,6 @@ public class PrefabReferenceFinder : EditorWindow
         {
             case EventType.DragUpdated:
             case EventType.DragPerform:
-                // 检查拖拽对象是否为预制体
                 bool isPrefab = false;
                 foreach (var obj in DragAndDrop.objectReferences)
                 {
@@ -577,31 +563,27 @@ public class PrefabReferenceFinder : EditorWindow
 
                 if (isPrefab)
                 {
-                    // 显示拖拽视觉反馈
                     DragAndDrop.visualMode = DragAndDropVisualMode.Link;
                     
                     if (eventType == EventType.DragPerform)
                     {
                         DragAndDrop.AcceptDrag();
                         
-                        // 获取第一个有效的预制体
                         foreach (var obj in DragAndDrop.objectReferences)
                         {
                             if (obj is GameObject gameObj && 
                                 PrefabUtility.GetPrefabAssetType(gameObj) != PrefabAssetType.NotAPrefab)
                             {
-                                // 设置新的目标预制体
                                 targetPrefab = gameObj;
                                 titleContent = new GUIContent($"Prefab: {targetPrefab.name}");
                                 
-                                // 触发搜索
                                 if (cacheInitialized)
                                 {
                                     FindReferencesWithCache();
                                 }
                                 else
                                 {
-                                    InitializeCache();
+                                    BuildCache();
                                 }
                                 break;
                             }
