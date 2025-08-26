@@ -8,7 +8,14 @@ using System.Text;
 
 public class PrefabReferenceFinder : EditorWindow
 {
-    private const string PrefabsFolderPath = "Assets";
+    private const string DefaultPrefabsFolderPath = "Assets";
+    private const string PrefsKey = "PrefabReferenceFinder_SearchPath";
+    private string PrefabsFolderPath
+    {
+        get => EditorPrefs.GetString(PrefsKey, DefaultPrefabsFolderPath);
+        set => EditorPrefs.SetString(PrefsKey, value);
+    }
+    
     private const string CacheFileName = "PrefabReferenceCache.json";
     private static Dictionary<string, List<string>> referenceCache = new Dictionary<string, List<string>>();
     private static Dictionary<string, HashSet<string>> dependencyMap = new Dictionary<string, HashSet<string>>();
@@ -381,7 +388,37 @@ public class PrefabReferenceFinder : EditorWindow
         EditorGUILayout.EndHorizontal();
 
         EditorGUILayout.Separator();
-        EditorGUILayout.LabelField($"Search Path: {PrefabsFolderPath}", EditorStyles.miniLabel);
+        
+        // 添加搜索路径设置
+        EditorGUILayout.BeginHorizontal();
+        EditorGUILayout.LabelField("Search Path:", GUILayout.Width(80));
+        EditorGUILayout.LabelField(PrefabsFolderPath, EditorStyles.textField, GUILayout.ExpandWidth(true));
+        
+        if (GUILayout.Button("Browse", GUILayout.Width(60)))
+        {
+            string newPath = EditorUtility.OpenFolderPanel("Select Folder to Search", PrefabsFolderPath, "");
+            if (!string.IsNullOrEmpty(newPath))
+            {
+                // 将绝对路径转换为相对于项目文件夹的路径
+                string projectPath = Application.dataPath.Replace("Assets", "");
+                if (newPath.StartsWith(projectPath))
+                {
+                    PrefabsFolderPath = newPath.Substring(projectPath.Length);
+                    cacheInitialized = false;
+                }
+                else
+                {
+                    EditorUtility.DisplayDialog("Error", "The selected folder must be within the project.", "OK");
+                }
+            }
+        }
+        
+        if (GUILayout.Button("Reset", GUILayout.Width(60)))
+        {
+            PrefabsFolderPath = DefaultPrefabsFolderPath;
+            cacheInitialized = false;
+        }
+        EditorGUILayout.EndHorizontal();
 
         // 缓存控制区域
         if (GUILayout.Button("Rebuild Cache", GUILayout.Width(120)))
