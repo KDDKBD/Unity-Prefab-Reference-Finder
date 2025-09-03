@@ -20,7 +20,7 @@ public class PrefabReferenceFinder : EditorWindow
     private static Dictionary<string, List<string>> referenceCache = new Dictionary<string, List<string>>();
     private static Dictionary<string, HashSet<string>> dependencyMap = new Dictionary<string, HashSet<string>>();
     
-    private GameObject targetPrefab;
+    private UnityEngine.Object targetAsset;
     private Vector2 scrollPositionReferences;
     private Vector2 scrollPositionDependencies;
     private List<string> referenceResults = new List<string>();
@@ -38,19 +38,27 @@ public class PrefabReferenceFinder : EditorWindow
     private List<string> scriptDependencies = new List<string>();
     private List<string> otherDependencies = new List<string>();
     
-    [MenuItem("Assets/Find Reference in Prefabs", false, 20)]
+    [MenuItem("Assets/Find prefab|image Reference", false, 20)]
     private static void FindReferences()
     {
-        var selected = Selection.activeObject as GameObject;
-        if (selected == null || PrefabUtility.GetPrefabAssetType(selected) == PrefabAssetType.NotAPrefab)
+        var selected = Selection.activeObject;
+        if (selected == null) return;
+
+        // CHANGE: 允许 prefab 或图片
+        bool isTargetType =
+            (selected is GameObject go && PrefabUtility.GetPrefabAssetType(go) != PrefabAssetType.NotAPrefab) ||
+            (selected is Texture2D) ||
+            (selected is Sprite);
+
+        if (!isTargetType)
         {
-            EditorUtility.DisplayDialog("Error", "Please select a valid prefab", "OK");
+            EditorUtility.DisplayDialog("Error", "Please select a prefab or image asset", "OK");
             return;
         }
 
-        var window = GetWindow<PrefabReferenceFinder>("Prefab References");
-        window.targetPrefab = selected;
-        window.titleContent = new GUIContent($"Prefab: {selected.name}");
+        var window = GetWindow<PrefabReferenceFinder>("Asset References");
+        window.targetAsset = selected;
+        window.titleContent = new GUIContent($"Asset: {selected.name}");
         
         if (LoadCacheFromDisk() || cacheInitialized)
         {
@@ -176,9 +184,9 @@ public class PrefabReferenceFinder : EditorWindow
 
     private void FindReferencesWithCache()
     {
-        if (targetPrefab == null) return;
+        if (targetAsset == null) return;
         
-        string targetPath = AssetDatabase.GetAssetPath(targetPrefab);
+        string targetPath = AssetDatabase.GetAssetPath(targetAsset);
         referenceResults.Clear();
         dependencyResults.Clear();
 
@@ -373,17 +381,17 @@ public class PrefabReferenceFinder : EditorWindow
         EditorGUILayout.LabelField("Optimized Prefab Reference Finder", EditorStyles.boldLabel);
         EditorGUILayout.Separator();
 
-        if (targetPrefab == null)
+        if (targetAsset == null)
         {
             EditorGUILayout.HelpBox("No target prefab selected. Drag a prefab here to search.", MessageType.Info);
             return;
         }
 
         EditorGUILayout.BeginHorizontal();
-        EditorGUILayout.LabelField($"Target Prefab: {targetPrefab.name}", EditorStyles.boldLabel, GUILayout.ExpandWidth(true));
+        EditorGUILayout.LabelField($"Target Prefab: {targetAsset.name}", EditorStyles.boldLabel, GUILayout.ExpandWidth(true));
         if (GUILayout.Button("Change Target", GUILayout.Width(120)))
         {
-            Selection.activeObject = targetPrefab;
+            Selection.activeObject = targetAsset;
         }
         EditorGUILayout.EndHorizontal();
 
@@ -461,7 +469,7 @@ public class PrefabReferenceFinder : EditorWindow
             EditorGUILayout.BeginVertical(GUILayout.Width(position.width * 0.5f));
             try
             {
-                EditorGUILayout.LabelField($"References to {targetPrefab.name}: {referenceResults.Count}", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField($"References to {targetAsset.name}: {referenceResults.Count}", EditorStyles.boldLabel);
                 scrollPositionReferences = EditorGUILayout.BeginScrollView(scrollPositionReferences, "box");
             
                 if (referenceResults.Count == 0)
@@ -486,7 +494,7 @@ public class PrefabReferenceFinder : EditorWindow
             EditorGUILayout.BeginVertical(GUILayout.Width(position.width * 0.5f));
             try
             {
-                EditorGUILayout.LabelField($"Dependencies of {targetPrefab.name}: {dependencyResults.Count}", EditorStyles.boldLabel);
+                EditorGUILayout.LabelField($"Dependencies of {targetAsset.name}: {dependencyResults.Count}", EditorStyles.boldLabel);
                 scrollPositionDependencies = EditorGUILayout.BeginScrollView(scrollPositionDependencies, "box");
             
                 if (dependencyResults.Count == 0)
@@ -587,18 +595,19 @@ public class PrefabReferenceFinder : EditorWindow
         {
             case EventType.DragUpdated:
             case EventType.DragPerform:
-                bool isPrefab = false;
+                bool isTargetType = false;
                 foreach (var obj in DragAndDrop.objectReferences)
                 {
-                    if (obj is GameObject gameObj && 
-                        PrefabUtility.GetPrefabAssetType(gameObj) != PrefabAssetType.NotAPrefab)
+                    if ((obj is GameObject go && PrefabUtility.GetPrefabAssetType(go) != PrefabAssetType.NotAPrefab) ||
+                        (obj is Texture2D) ||
+                        (obj is Sprite))
                     {
-                        isPrefab = true;
+                        isTargetType = true;
                         break;
                     }
                 }
 
-                if (isPrefab)
+                if (isTargetType)
                 {
                     DragAndDrop.visualMode = DragAndDropVisualMode.Link;
                     
@@ -608,11 +617,12 @@ public class PrefabReferenceFinder : EditorWindow
                         
                         foreach (var obj in DragAndDrop.objectReferences)
                         {
-                            if (obj is GameObject gameObj && 
-                                PrefabUtility.GetPrefabAssetType(gameObj) != PrefabAssetType.NotAPrefab)
+                            if ((obj is GameObject go && PrefabUtility.GetPrefabAssetType(go) != PrefabAssetType.NotAPrefab) ||
+                                (obj is Texture2D) ||
+                                (obj is Sprite))
                             {
-                                targetPrefab = gameObj;
-                                titleContent = new GUIContent($"Prefab: {targetPrefab.name}");
+                                targetAsset = obj;
+                                titleContent = new GUIContent($"Asset: {targetAsset.name}");
                                 
                                 if (LoadCacheFromDisk() || cacheInitialized)
                                 {
