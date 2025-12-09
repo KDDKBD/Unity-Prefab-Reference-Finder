@@ -160,16 +160,65 @@ public class PrefabReferenceFinder : EditorWindow
     {
         try
         {
+            // 获取直接依赖的资源（Texture2D、其他 Prefab 等）
             string[] dependencies = AssetDatabase.GetDependencies(prefabPath, false);
             dependencyMap[prefabPath] = new HashSet<string>(dependencies);
-            
+    
+            // 额外：收集 Prefab 中引用的 Sprite
+            GameObject prefab = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+            if (prefab != null)
+            {
+                // 查找所有组件中对 Sprite 的引用
+                Sprite[] spritesInPrefab = prefab.GetComponentsInChildren<Component>(true)
+                    .SelectMany(c =>
+                    {
+                        var sprites = new List<Sprite>();
+                        SerializedObject so = new SerializedObject(c);
+                        SerializedProperty prop = so.GetIterator();
+                        while (prop.NextVisible(true))
+                        {
+                            if (prop.propertyType == SerializedPropertyType.ObjectReference &&
+                                prop.objectReferenceValue is Sprite sprite)
+                            {
+                                sprites.Add(sprite);
+                            }
+                        }
+                        return sprites;
+                    })
+                    .Distinct()
+                    .ToArray();
+    
+                foreach (Sprite sprite in spritesInPrefab)
+                {
+                    string spritePath = AssetDatabase.GetAssetPath(sprite);
+                    // Sprite 是 Texture2D 的子资产，路径格式如 "Assets/Texture.png"
+                    // 但我们需要标记它是具体的 Sprite
+                    string spriteIdentifier = $"{spritePath}[{sprite.name}]";
+    
+                    if (!dependencyMap[prefabPath].Contains(spriteIdentifier))
+                    {
+                        dependencyMap[prefabPath].Add(spriteIdentifier);
+                    }
+    
+                    // 更新引用缓存
+                    if (!referenceCache.ContainsKey(spriteIdentifier))
+                    {
+                        referenceCache[spriteIdentifier] = new List<string>();
+                    }
+                    if (!referenceCache[spriteIdentifier].Contains(prefabPath))
+                    {
+                        referenceCache[spriteIdentifier].Add(prefabPath);
+                    }
+                }
+            }
+    
+            // 更新依赖缓存（原有逻辑）
             foreach (string dependency in dependencies)
             {
                 if (!referenceCache.ContainsKey(dependency))
                 {
                     referenceCache[dependency] = new List<string>();
                 }
-                
                 if (!referenceCache[dependency].Contains(prefabPath))
                 {
                     referenceCache[dependency].Add(prefabPath);
@@ -185,29 +234,36 @@ public class PrefabReferenceFinder : EditorWindow
     private void FindReferencesWithCache()
     {
         if (targetAsset == null) return;
-        
+    
         string targetPath = AssetDatabase.GetAssetPath(targetAsset);
         referenceResults.Clear();
         dependencyResults.Clear();
-
+    
+        // 如果是 Sprite，构造标识符
+        string cacheKey = targetPath;
+        if (targetAsset is Sprite sprite)
+        {
+            cacheKey = $"{targetPath}[{sprite.name}]";
+        }
+    
         // 获取引用结果
-        if (referenceCache.TryGetValue(targetPath, out var references))
+        if (referenceCache.TryGetValue(cacheKey, out var references))
         {
             referenceResults = references;
         }
-        
-        // 获取依赖结果
+        // else if (referenceCache.TryGetValue(targetPath, out references)) // 回退到 Texture 路径
+        // {
+        //     referenceResults = references;
+        // }
+    
+        // 获取依赖结果（依赖列表保持不变）
         if (dependencyMap.TryGetValue(targetPath, out var dependencies))
         {
             dependencyResults = dependencies.ToList();
         }
-        
-        // 对引用列表按字母顺序排序
+    
         referenceResults.Sort((a, b) => string.Compare(a, b, StringComparison.OrdinalIgnoreCase));
-        
-        // 对依赖项进行分类和排序
         ClassifyAndSortDependencies();
-        
         Repaint();
         EditorUtility.ClearProgressBar();
     }
@@ -222,6 +278,13 @@ public class PrefabReferenceFinder : EditorWindow
         
         foreach (string path in dependencyResults)
         {
+            // 检查是否为 Sprite 标识符
+            if (path.Contains("[") && path.Contains("]"))
+            {
+                textureDependencies.Add(path);
+                continue;
+            }
+            
             string extension = Path.GetExtension(path).ToLower();
             
             if (extension == ".prefab")
@@ -388,14 +451,13 @@ public class PrefabReferenceFinder : EditorWindow
         }
 
         EditorGUILayout.BeginHorizontal();
-        EditorGUILayout.LabelField($"Target Prefab: {targetAsset.name}", EditorStyles.boldLabel, GUILayout.ExpandWidth(true));
+        string assetType = targetAsset is Sprite ? "Sprite" : (targetAsset is Texture2D ? "Texture" : "Prefab");
+        EditorGUILayout.LabelField($"Target {assetType}: {targetAsset.name}", EditorStyles.boldLabel, GUILayout.ExpandWidth(true));
         if (GUILayout.Button("Change Target", GUILayout.Width(120)))
         {
             Selection.activeObject = targetAsset;
         }
         EditorGUILayout.EndHorizontal();
-
-        EditorGUILayout.Separator();
         
         // 添加搜索路径设置
         EditorGUILayout.BeginHorizontal();
@@ -538,42 +600,103 @@ public class PrefabReferenceFinder : EditorWindow
         
         EditorGUILayout.BeginHorizontal(GUILayout.Height(24));
         
-        UnityEngine.Object asset = AssetDatabase.LoadMainAssetAtPath(path);
+        UnityEngine.Object asset = null;
         Texture2D icon = EditorGUIUtility.FindTexture("DefaultAsset Icon") as Texture2D;
 
-        if (asset != null)
+        // 如果是 Sprite 标识符格式
+        if (path.Contains("[") && path.Contains("]"))
         {
-            var content = EditorGUIUtility.ObjectContent(asset, asset.GetType());
-            if (content != null && content.image != null)
+            string texturePath = path.Substring(0, path.IndexOf('['));
+            string spriteName = path.Substring(path.IndexOf('[') + 1).TrimEnd(']');
+            Texture2D tex = AssetDatabase.LoadAssetAtPath<Texture2D>(texturePath);
+            if (tex != null)
             {
-                icon = content.image as Texture2D;
+                // 加载 Texture 的所有 Sprite
+                Sprite[] sprites = AssetDatabase.LoadAllAssetsAtPath(texturePath).OfType<Sprite>().ToArray();
+                Sprite targetSprite = sprites.FirstOrDefault(s => s.name == spriteName);
+                if (targetSprite != null)
+                {
+                    var content = EditorGUIUtility.ObjectContent(targetSprite, typeof(Sprite));
+                    icon = content.image as Texture2D;
+                    asset = targetSprite;
+                }
+            }
+        }
+        else
+        {
+            asset = AssetDatabase.LoadMainAssetAtPath(path);
+            if (asset != null)
+            {
+                var content = EditorGUIUtility.ObjectContent(asset, asset.GetType());
+                if (content != null && content.image != null)
+                {
+                    icon = content.image as Texture2D;
+                }
             }
         }
         
-        string fileName = Path.GetFileName(path);
-        GUIContent labelContent = new GUIContent(fileName, icon, path);
+        string displayName = asset != null ? asset.name : Path.GetFileName(path);
+        GUIContent labelContent = new GUIContent(displayName, icon, path);
         
         EditorGUILayout.LabelField(labelContent, 
             EditorStyles.label, 
             GUILayout.MinWidth(50), 
             GUILayout.ExpandWidth(true));
         
+        // 处理 Select 按钮
         if (GUILayout.Button("Select", GUILayout.Width(60)))
         {
-            UnityEngine.Object obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-            if (obj != null)
+            if (asset != null)
             {
-                Selection.activeObject = obj;
-                EditorGUIUtility.PingObject(obj);
+                Selection.activeObject = asset;
+                EditorGUIUtility.PingObject(asset);
+            }
+            else if (path.Contains("[") && path.Contains("]"))
+            {
+                // 对于 Sprite 标识符，选中对应的纹理
+                string texturePath = path.Substring(0, path.IndexOf('['));
+                UnityEngine.Object obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(texturePath);
+                if (obj != null)
+                {
+                    Selection.activeObject = obj;
+                    EditorGUIUtility.PingObject(obj);
+                }
+            }
+            else
+            {
+                UnityEngine.Object obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+                if (obj != null)
+                {
+                    Selection.activeObject = obj;
+                    EditorGUIUtility.PingObject(obj);
+                }
             }
         }
         
+        // 处理 Open 按钮
         if (GUILayout.Button("Open", GUILayout.Width(60)))
         {
-            UnityEngine.Object obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-            if (obj != null)
+            if (asset != null)
             {
-                AssetDatabase.OpenAsset(obj);
+                AssetDatabase.OpenAsset(asset);
+            }
+            else if (path.Contains("[") && path.Contains("]"))
+            {
+                // 对于 Sprite 标识符，打开对应的纹理
+                string texturePath = path.Substring(0, path.IndexOf('['));
+                UnityEngine.Object obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(texturePath);
+                if (obj != null)
+                {
+                    AssetDatabase.OpenAsset(obj);
+                }
+            }
+            else
+            {
+                UnityEngine.Object obj = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
+                if (obj != null)
+                {
+                    AssetDatabase.OpenAsset(obj);
+                }
             }
         }
         
